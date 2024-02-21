@@ -1,0 +1,243 @@
+
+name: InnovationEngineInfraPipeline
+
+on: repository_dispatch
+
+jobs:
+  - deployment: Deployment
+    displayName: 'InfraProvisioning'
+    pool:
+      name: itsi-k8s-action-runner
+    environment:
+      name: 'InfraProvisioning'
+    variables:
+      vaultUrl: $(KEYVAULT_URL)
+      terraformtenantid: $(ARM_TENANT_ID)
+      gtOrgEnv: $(GT_ORG_ENV)
+      TARGET_TF_SCRIPTS_PATH: $(Build.SourcesDirectory)/tfe/terraform-scripts
+      TARGET_PACKAGE_TAR_FILE_PATH: $(Build.SourcesDirectory)/tfe/code
+    steps:
+      - task: NodeTool@0
+        inputs:
+          versionSpec: $(NODE_JS_VERSION)
+        displayName: 'Setup Node'
+
+      - checkout: self
+        path: .github/actions/CheckoutSecretAction
+
+      - script: ./.github/actions/CheckoutSecretAction
+        displayName: 'RunCheckoutSecretAction'
+        env:
+          Client_Id: $(ARM_CLIENT_ID)
+          Secret_Id: $(ARM_CLIENT_SECRET)
+          Tenant_Id: $(ARM_TENANT_ID)
+          VaultUrl: $(vaultUrl)
+          SecretNames: 'zenOssAzureUsername,zenOssAzurePassword,zenOssOnPremUsername,zenOssOnPremPassword,tfeSubsciptionIdDev,tfeSubsciptionIdTest,tfeSubsciptionIdSandbox,tfeSubsciptionIdProd,tfeSubscriptionIdCore,tfeSubscriptionIdComm,terraformclientid,terraformclientsecret,namingfunctionkey,serviceNowUser,serviceNowPassword,TfeToken,AzureEventHubKey,AzureEventHubSecret,CdrDBUser,CdrDBPassword,appConfigEndpoint,tfeSubscriptionIdCSPDev,tfeSubscriptionIdCSPTest,tfeSubscriptionIdCSPProd,tfeSubscriptionIdCSPComm,tfeSubscriptionIdCSPCore,tfeSubscriptionIdClientProductivity,connStringCoreOpsStorageAccount,costCenterStrAcctTableName,appRgStrAcctTableName,emailHost,emailPort,ChinaClientId,ChinaTenantId,ChinaDevSubscriptionId,ChinaClientSecret,terraformHost,tfeOrg,namingEngineEndpointURL,zenOssAzureHost,zenOssOnpremHost,zenOssAzureCollectorName,zenOssOnPremWinCollectorName,zenOssOnPremLinCollectorName,gthubServiceAccountUsername,gthubServiceAccountEmail,gthubServiceAccountName,serviceNowHost,cmdbApiEndPoint,eventHubEndPoint'
+          displayName: 'Run Checkout Secret Action'
+
+      - checkout: self
+        path: pipeline
+
+      - script: ./.github/actions/read-config-file
+        displayName: 'Read Config File'
+        env:
+          platform: ${{github.event.client_payload.platform}}
+          configLocation: ${{github.event.client_payload.location}}
+          application_stack: ${{github.event.client_payload.application_stack}}
+          zenOssAzureUsername: $(zenOssAzureUsername)
+          zenOssAzurePassword: $(zenOssAzurePassword)
+          zenOssAzureHost: $(zenOssAzureHost)
+          zenOssOnPremUsername: $(zenOssOnPremUsername)
+          zenOssOnPremPassword: $(zenOssOnPremPassword)
+          zenOssOnPremHost: $(zenOssOnpremHost)
+          displayName: 'Read Config File'
+
+      - script: ./.github/actions/drift-detection-azure-catalog
+        displayName: 'Drift Detection for Azure Catalog'
+        env:
+          terraformHost: $(terraformHost)
+          terraformToken: $(TfeToken)
+          requestObject: ${{toJSON(github.event.client_payload)}}
+          serviceNowHost: $(serviceNowHost)
+          serviceNowUser: $(serviceNowUser)
+          serviceNowPassword: $(serviceNowPassword)
+          serviceNowTaskId: ${{github.event.client_payload.task_details.task_guid}}
+
+      - checkout: self
+        path: templates
+
+      - script: |
+          if [ -d "$TARGET_TF_SCRIPTS_PATH" ]; then
+            echo "Target Tf Scripts Already Exist. Deleting it now.."
+            rm -r "$TARGET_TF_SCRIPTS_PATH"
+          fi
+          echo "RepoName from Config File - $tfRepoName"
+          echo "Creating the Target Directory..."
+          mkdir -p "$TARGET_TF_SCRIPTS_PATH"
+          echo "Directory Created Successfully..."
+        displayName: 'Create Target Tf Scripts Directory'
+
+      - checkout: self
+        path: ${{env.TARGET_TF_SCRIPTS_PATH}}
+        if: ${{ env.tfRepoName != ''}}
+
+      - script: ./.github/actions/create-dynamic-scripts
+        displayName: 'Create Dynamic Terraform Scripts'
+        if: ${{ env.isAzureCatalog == 0 && env.tfRepoName == ''}}
+        env:
+          gtOrgEnv: $(GT_ORG_ENV)
+          payload: ${{toJSON(github.event.client_payload)}}
+          pathForTfScripts: ${{env.TARGET_TF_SCRIPTS_PATH}}
+          pathForTfTemplates: ./templates
+          pipelineToken: $(Pipeline_Token)
+          gthubOrgName: ${{github.repository_owner}}
+          moduleConfigRepoName: $(MODULE_CONFIG_REPO_NAME)
+          moduleConfigBranchName: $(MODULE_CONFIG_BRANCH_NAME)
+          moduleConfigFilePathWithName: $(MODULE_CONFIG_FILE_PATH_WITH_NAME)
+          tfeOrg: $(tfeOrg)
+          tfeHost: $(terraformHost)
+
+      - checkout: self
+        path: .github/actions/StackGenAction
+        if: ${{ env.isAzureCatalog == 1}}
+
+      - script: ./.github/actions/StackGenAction
+        displayName: 'Run Stack Gen Action'
+        if: ${{ env.isAzureCatalog == 1}}
+        env:
+          gtOrgEnv: $(GT_ORG_ENV)
+          githubOrg: ${{github.repository_owner}}
+          githubToken: $(Pipeline_Token)
+          pathForTfScripts: ${{env.TARGET_TF_SCRIPTS_PATH}}
+          pathForTfTemplates: ./templates
+          tfMainCallingCodeRepoGlobal: $(TF_MAIN_CALLING_CODE_REPO_GLOBAL)
+          tfMainCallingCodeRepoChina: $(TF_MAIN_CALLING_CODE_REPO_CHINA)
+          appSku: ${{github.event.client_payload.additional_details.application_sku}}
+          appName: ${{github.event.client_payload.additional_details.application_name}}
+          appLocation: ${{github.event.client_payload.location}}
+          platform: ${{github.event.client_payload.platform}}
+          serviceAccountUsername: $(gthubServiceAccountUsername)
+          serviceAccountEmail: $(gthubServiceAccountEmail)
+          serviceAccountName: $(gthubServiceAccountName)
+          serviceNowTaskId: ${{github.event.client_payload.task_details.task_id}}
+          payloadResourceList: ${{toJSON(github.event.client_payload.resources)}}
+          githubRestApiEndpoint: $(GTHUB_REST_API_ENDPOINT)
+          env: ${{github.event.client_payload.environment}}
+
+      - script: |
+          for file in *; do
+            echo -e "\n===================== $file Start ========================"
+            echo -e "===========================================================\n"
+            cat "$file"
+            echo -e "\n==========================================================="
+            echo -e "===================== $file End =============================\n"
+          done
+        displayName: 'Show Terraform Files Content'
+        workingDirectory: ${{env.TARGET_TF_SCRIPTS_PATH}}
+
+      - script: |
+          countOfTfFiles=$(ls *.tf | wc -l)
+          echo -e "countOfTfFiles = $countOfTfFiles"
+          if [ $countOfTfFiles -gt 0 ]; then
+            tar -czvf package.tar.gz *.tf
+            mv package.tar.gz ../code
+            ls ../code
+          else
+            echo "::error::Zip Terraform Files Failed."
+            exit 1
+          fi
+        displayName: 'Create TAR Package'
+        workingDirectory: ${{env.TARGET_TF_SCRIPTS_PATH}}
+
+      - checkout: self
+        path: .github/actions/CheckoutMainPipeline
+
+      - checkout: self
+        path: .github/actions/PipelineErrorHandle
+        if: ${{ failure() }}
+
+      - script: ./.github/actions/set-error-message
+        displayName: 'Set the error message for failed step'
+        if: ${{ failure() }}
+        env:
+          ReadConfigOutcome: ${{ steps.ReadConfig.outcome }}
+          CheckoutTfRepoOutcome: ${{ steps.CheckoutTfRepo.outcome }}
+          ZipTfFilesOutcome: ${{ steps.ZipTfFiles.outcome }}
+          CheckoutMainPipelineOutcome: ${{ steps.CheckoutMainPipeline.outcome }}
+          CheckoutErrorHandleRepoOutcome: ${{ steps.CheckoutErrorHandleRepo.outcome }}
+
+      - script: ./.github/actions/PipelineErrorHandle
+        displayName: 'Run Error Handle Action'
+        if: ${{ failure() }}
+        env:
+          workSpaceName: ''
+          workSpaceId: ''
+          serviceNowHost: $(serviceNowHost)
+          serviceNowUser: $(serviceNowUser)
+          serviceNowPassword: $(serviceNowPassword)
+          serviceNowTaskId: ${{github.event.client_payload.task_details.task_guid}}
+          gtOrgEnv: $(GT_ORG_ENV)
+          requestObject: ${{toJSON(github.event.client_payload)}}
+          emailHost: $(emailHost)
+          emailPort: $(emailPort)
+
+      - script: ./.github/actions/CheckoutMainPipeline
+        displayName: 'Run Main Pipeline'
+        env:
+          terraformHost: $(terraformHost)
+          terraformToken: $(TfeToken)
+          terraformOrg: $(tfeOrg)
+          terraformWorkspace: ${{github.event.client_payload.additional_details.application_sku}}-${{github.event.client_payload.environment}}-${{github.event.client_payload.task_details.task_id}}
+          updatedPayload: ${{ env.updatedPayload }}
+          configFilePath: ${{ env.TARGET_PACKAGE_TAR_FILE_PATH }}
+          Client_Id: $(terraformclientid)
+          Secret_Id: $(terraformclientsecret)
+          Tenant_Id: $(terraformtenantid)
+          Subscription_Id: $(tfeSubsciptionIdDev),$(tfeSubsciptionIdTest),$(tfeSubsciptionIdSandbox),$(tfeSubsciptionIdProd),$(tfeSubscriptionIdCore),$(tfeSubscriptionIdComm),$(tfeSubscriptionIdCSPDev),$(tfeSubscriptionIdCSPTest),$(tfeSubscriptionIdCSPProd),$(tfeSubscriptionIdCSPComm),$(tfeSubscriptionIdCSPCore),$(tfeSubscriptionIdClientProductivity)
+          pipelineConfigFile: ./pipeline/${{env.pipelineConfigFileName}}
+          environment: ${{github.event.client_payload.environment}}
+          platform: $(platform)
+          additionalDetails: ${{toJSON(github.event.client_payload.additional_details)}}
+          namingEngineEndpoint: $(namingEngineEndpointURL)
+          location: ${{github.event.client_payload.location}}
+          serviceNowHost: $(serviceNowHost)
+          serviceNowUser: $(serviceNowUser)
+          serviceNowPassword: $(serviceNowPassword)
+          serviceNowTaskId: ${{github.event.client_payload.task_details.task_guid}}
+          namingEngineFuncKey: $(namingfunctionkey)
+          azureEventHubKey: $(AzureEventHubKey)
+          azureEventHubSecret: $(AzureEventHubSecret)
+          azureEventEndpoint: $(eventHubEndPoint)
+          requestObject: ${{toJSON(github.event.client_payload)}}
+          CDR_Database_User: $(CdrDBUser)
+          CDR_Database_Password: $(CdrDBPassword)
+          cmdbApiEndPoint: $(cmdbApiEndPoint)
+          azureAppConfigEndpoint: $(appConfigEndpoint)
+          zenOssUsername: $(zenOssUsername)
+          zenOssPassword: $(zenOssPassword)
+          zenOssHost: $(zenOssHost)
+          zenOssAzureCollectorName: $(zenOssAzureCollectorName)
+          zenOssOnPremWinCollectorName: $(zenOssOnPremWinCollectorName)
+          zenOssOnPremLinxCollectorName: $(zenOssOnPremLinCollectorName)
+          gtOrgEnv: $(gtOrgEnv)
+          envVarConfigFile: ./pipeline/parameter_files/${{env.envVarConfigFileName}}
+          orgVarConfigFile: ./pipeline/parameter_files/${{env.orgVarConfigFileName}}
+          platformVarConfigFile: ./pipeline/parameter_files/${{env.platformVarConfigFileName}}
+          previousgenCodeDetails: ${{ env.previousgenCodeDetails }}
+          connStringCoreOpsStorageAccount: $(connStringCoreOpsStorageAccount)
+          costCenterStrAcctTableName: $(costCenterStrAcctTableName)
+          allTfeVarsAddedInWorkspace: $(allTfeVarsAddedInWorkspace)
+          appRgStrAcctTableName: $(appRgStrAcctTableName)
+          githubOrg: ${{github.repository_owner}}
+          githubToken: $(Pipeline_Token)
+          tfMainCallingCodeRepoGlobal: $(TF_MAIN_CALLING_CODE_REPO_GLOBAL)
+          tfMainCallingCodeRepoChina: $(TF_MAIN_CALLING_CODE_REPO_CHINA)
+          serviceAccountUsername: $(gthubServiceAccountUsername)
+          serviceAccountEmail: $(gthubServiceAccountEmail)
+          serviceAccountName: $(gthubServiceAccountName)
+          emailHost: $(emailHost)
+          emailPort: $(emailPort)
+          ChinaClientId: $(ChinaClientId)
+          ChinaTenantId: $(ChinaTenantId)
+          ChinaDevSubscriptionId: $(ChinaDevSubscriptionId)
+          ChinaClientSecret: $(ChinaClientSecret)
